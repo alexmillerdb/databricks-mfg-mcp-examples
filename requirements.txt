@@ -1,0 +1,31 @@
+# Core MCP and LangGraph dependencies
+mcp>=1.0.0
+langgraph==0.3.4
+
+# Databricks dependencies
+databricks-sdk
+databricks-agents>=1.0.0
+databricks-connect>=16.1.0
+mlflow==3.3.0
+
+# Data processing
+pandas
+numpy
+pydantic>=2.5.0,<2.12
+
+# Web framework for Databricks Apps
+fastapi
+uvicorn
+
+# Utilities
+python-dotenv
+httpx
+aiofiles
+
+# Development dependencies (optional)
+pytest
+pytest-asyncio
+black
+isort
+mypy
+ruff
