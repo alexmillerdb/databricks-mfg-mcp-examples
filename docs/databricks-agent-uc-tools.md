@@ -23,9 +23,14 @@ This documentation covers the integration of Unity Catalog functions with the Da
 ## Required Dependencies
 
 ```python
+# Install Unity Catalog AI integration packages with the Databricks extra
 %pip install unitycatalog-ai[databricks]
 %pip install unitycatalog-langchain[databricks]
+
+# Install the Databricks LangChain integration package
 %pip install databricks-langchain
+
+dbutils.library.restartPython()
 ```
 
 ## Creating Custom Unity Catalog Tools
@@ -34,11 +39,8 @@ This documentation covers the integration of Unity Catalog functions with the Da
 
 ```python
 from unitycatalog.ai.core.databricks import DatabricksFunctionClient
-client = DatabricksFunctionClient()
 
-# Alternative initialization
-from unitycatalog.ai.core.base import get_uc_function_client
-client = get_uc_function_client()
+client = DatabricksFunctionClient()
 ```
 
 ### 2. Function Definition Requirements
@@ -50,16 +52,20 @@ client = get_uc_function_client()
 - All dependencies imported within function scope
 
 ```python
+CATALOG = "my_catalog"
+SCHEMA = "my_schema"
+
 def add_numbers(number_1: float, number_2: float) -> float:
     """
-    A function that adds two floating point numbers.
-    
+    A function that accepts two floating point numbers adds them,
+    and returns the resulting sum as a float.
+
     Args:
-        number_1 (float): First number to add
-        number_2 (float): Second number to add
-    
+        number_1 (float): The first of the two numbers to add.
+        number_2 (float): The second of the two numbers to add.
+
     Returns:
-        float: Sum of input numbers
+        float: The sum of the two input numbers.
     """
     return number_1 + number_2
 ```
@@ -69,19 +75,32 @@ def add_numbers(number_1: float, number_2: float) -> float:
 ```python
 function_info = client.create_python_function(
     func=add_numbers,
-    catalog="my_catalog",
-    schema="my_schema", 
+    catalog=CATALOG,
+    schema=SCHEMA,
     replace=True
 )
 ```
 
-### 4. Tool Integration with Agents
+### 4. Test the Function
+
+```python
+result = client.execute_function(
+    function_name=f"{CATALOG}.{SCHEMA}.add_numbers",
+    parameters={"number_1": 36939.0, "number_2": 8922.4}
+)
+
+result.value  # OUTPUT: '45861.4'
+```
+
+### 5. Tool Integration with Agents
 
 ```python
 from databricks_langchain import UCFunctionToolkit
 
+# Create a toolkit with the Unity Catalog function
 func_name = f"{CATALOG}.{SCHEMA}.add_numbers"
 toolkit = UCFunctionToolkit(function_names=[func_name])
+
 tools = toolkit.tools
 ```
 
@@ -96,7 +115,7 @@ CREATE OR REPLACE FUNCTION main.default.lookup_customer_info(
   customer_name STRING COMMENT 'Name of the customer whose info to look up'
 )
 RETURNS STRING
-COMMENT 'Returns metadata about a particular customer'
+COMMENT 'Returns metadata about a particular customer, given the customer''s name, including the customer''s email and ID. The customer ID can be used for other queries.'
 RETURN SELECT CONCAT(
     'Customer ID: ', customer_id, ', ',
     'Customer Email: ', customer_email
@@ -128,54 +147,43 @@ For complex, natural language queries:
 
 ## LangChain Integration Patterns
 
-### Complete Integration Example
+### Complete Agent Example
 
 ```python
-# 1. Import required modules
-from unitycatalog.ai.core.base import get_uc_function_client
-from databricks_langchain import UCFunctionToolkit
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.prompts import ChatPromptTemplate
+from databricks_langchain import (
+    ChatDatabricks,
+    UCFunctionToolkit,
+)
+import mlflow
 
-# 2. Initialize client
-client = get_uc_function_client()
+# Initialize the LLM (optional: replace with your LLM of choice)
+LLM_ENDPOINT_NAME = "databricks-meta-llama-3-3-70b-instruct"
+llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME, temperature=0.1)
 
-# 3. Define and register function
-def calculate_inventory_shortage(item_id: str, demand_forecast: float) -> dict:
-    """
-    Calculate potential inventory shortage for manufacturing item.
-    
-    Args:
-        item_id (str): Manufacturing item identifier
-        demand_forecast (float): Predicted demand units
-        
-    Returns:
-        dict: Shortage analysis with recommendations
-    """
-    # Import dependencies within function
-    import json
-    
-    # Function logic here
-    result = {
-        "item_id": item_id,
-        "current_stock": 100,  # Query from Delta table
-        "demand_forecast": demand_forecast,
-        "shortage_risk": "HIGH" if demand_forecast > 100 else "LOW",
-        "recommended_action": "Increase production" if demand_forecast > 100 else "Maintain current levels"
-    }
-    
-    return json.dumps(result)
-
-# 4. Register function
-function_info = client.create_python_function(
-    func=calculate_inventory_shortage,
-    catalog="manufacturing",
-    schema="supply_chain",
-    replace=True
+# Define the prompt
+prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a helpful assistant. Make sure to use tools for additional functionality.",
+        ),
+        ("placeholder", "{chat_history}"),
+        ("human", "{input}"),
+        ("placeholder", "{agent_scratchpad}"),
+    ]
 )
 
-# 5. Create toolkit and tools
-func_name = "manufacturing.supply_chain.calculate_inventory_shortage" 
-toolkit = UCFunctionToolkit(function_names=[func_name])
-tools = toolkit.tools
+# Enable automatic tracing
+mlflow.langchain.autolog()
+
+# Define the agent, specifying the tools from the toolkit above
+agent = create_tool_calling_agent(llm, tools, prompt)
+
+# Create the agent executor
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+agent_executor.invoke({"input": "What is 36939.0 + 8922.4?"})
 ```
 
 ## Execution Modes
@@ -193,10 +201,13 @@ tools = toolkit.tools
 
 ## Configuration and Environment Variables
 
-```python
-# Key environment variables for execution control
-EXECUTOR_MAX_CPU_TIME_LIMIT = 10  # seconds
-```
+| **Environment variable**                                    | **Default value** | **Description**                                                                                              |
+| ----------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| EXECUTOR_MAX_CPU_TIME_LIMIT                                 | 10 seconds        | Maximum allowable CPU execution time (local mode only).                                                      |
+| EXECUTOR_MAX_MEMORY_LIMIT                                   | 100 MB            | Maximum allowable virtual memory allocation for the process (local mode only).                               |
+| EXECUTOR_TIMEOUT                                            | 20 seconds        | Maximum total wall clock time (local mode only).                                                             |
+| UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS                  | 5                 | The Maximum number of attempts to retry refreshing the session client in case of token expiry.               |
+| UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT      | 100               | The Maximum number of rows to return when running functions using serverless compute and databricks-connect. |
 
 ## Security and Multi-Tenancy
 
@@ -206,11 +217,18 @@ EXECUTOR_MAX_CPU_TIME_LIMIT = 10  # seconds
 - **Function-level permissions**: Granular access control
 - **Audit logging**: Complete lineage and usage tracking
 
-### On-Behalf-Of User Authentication
+### Execution Modes
+
+**Serverless Mode (Production)**:
 ```python
-# Functions execute with caller's permissions
-# Automatic multi-tenant isolation through UC governance
-# No additional authentication configuration needed
+# Defaults to serverless if `execution_mode` is not specified
+client = DatabricksFunctionClient(execution_mode="serverless")
+```
+
+**Local Mode (Development)**:
+```python
+# Use local mode for development and debugging
+client = DatabricksFunctionClient(execution_mode="local")
 ```
 
 ## Best Practices
@@ -234,16 +252,40 @@ EXECUTOR_MAX_CPU_TIME_LIMIT = 10  # seconds
 3. **Input Sanitization**: Validate and sanitize all inputs
 4. **Catalog Boundaries**: Respect multi-tenant isolation
 
-## Integration with MLflow 3.0
+## Tool Documentation Best Practices
 
-```python
-# Automatic logging and tracing
-import mlflow
-mlflow.langchain.autolog()
+### Effective Tool Documentation
 
-# Function execution automatically traced
-# Agent interactions logged
-# Performance metrics captured
+```sql
+CREATE OR REPLACE FUNCTION main.default.lookup_customer_info(
+  customer_name STRING COMMENT 'Name of the customer whose info to look up.'
+)
+RETURNS STRING
+COMMENT 'Returns metadata about a specific customer including their email and ID.'
+RETURN SELECT CONCAT(
+    'Customer ID: ', customer_id, ', ',
+    'Customer Email: ', customer_email
+  )
+  FROM main.default.customer_data
+  WHERE customer_name = customer_name
+  LIMIT 1;
+```
+
+### Ineffective Tool Documentation
+
+```sql
+CREATE OR REPLACE FUNCTION main.default.lookup_customer_info(
+  customer_name STRING COMMENT 'Name of the customer.'
+)
+RETURNS STRING
+COMMENT 'Returns info about a customer.'
+RETURN SELECT CONCAT(
+    'Customer ID: ', customer_id, ', ',
+    'Customer Email: ', customer_email
+  )
+  FROM main.default.customer_data
+  WHERE customer_name = customer_name
+  LIMIT 1;
 ```
 
 ## Common Implementation Patterns
@@ -308,6 +350,9 @@ def analyze_customer_churn_risk(customer_id: str, days_back: int = 90) -> str:
 ```python
 def robust_function_example(param: str) -> str:
     """Example function with proper error handling."""
+    import json
+    from datetime import datetime
+    
     try:
         # Validate input
         if not param or not isinstance(param, str):
