@@ -1,15 +1,24 @@
 # Databricks Manufacturing MCP Examples - Execution Plan
 
-This document provides a comprehensive implementation plan for building the multi-tenant Supply Chain & Sales agentic system on Databricks using Model Context Protocol (MCP). This plan should be used as a reference guide for Claude Code or developers implementing the system.
+This document provides a comprehensive implementation plan for building the multi-tenant Supply Chain & Sales agentic system on Databricks using Model Context Protocol (MCP). This plan follows the updated architecture and best practices defined in CLAUDE.md and the documentation guides.
 
 ## Project Overview
 
 Building a production-ready demonstration of MCP-based agent orchestration for manufacturing use cases with:
 - **Two primary personas**: Supply Chain Manager and Sales Representative
-- **Multi-tenant architecture**: Using Unity Catalog and On-Behalf-Of (OBO) authentication
-- **Managed MCP servers**: Vector Search, Genie Spaces, UC Functions
-- **Custom MCP server**: External APIs and IoT connectors
-- **Full observability**: MLflow 3.0 integration for tracing and evaluation
+- **Multi-tenant architecture**: Unity Catalog with optional On-Behalf-Of (OBO) authentication
+- **Managed MCP servers (Priority)**: Vector Search, Genie Spaces, UC Functions for instant governance
+- **Custom MCP server (Optional)**: Only for specialized logic not covered by managed MCP
+- **ResponsesAgent Interface**: Modern MLflow agent authoring with streaming support
+- **Full observability**: MLflow 3.0 integration with tracing, evaluation, and monitoring
+
+## Quick Start Priorities (Following CLAUDE.md Guidelines)
+
+1. **Default to managed MCP** for Databricks services (Genie, Vector Search, UC Functions)
+2. **Pin versions and verify environment** for stability
+3. **Log resource dependencies** with the model for automatic credential injection
+4. **Prefer automatic auth passthrough** - use OBO only when per-user scoping required
+5. **Follow the 10-step agent development workflow** from CLAUDE.md
 
 ## Implementation Phases
 
@@ -18,10 +27,10 @@ Building a production-ready demonstration of MCP-based agent orchestration for m
 
 #### 1.1 Configure Databricks CLI Authentication
 ```bash
-# Install Databricks CLI
-pip install databricks-cli
+# Install Databricks CLI with specific version
+pip install databricks-cli==0.18.0
 
-# Configure authentication
+# Configure OAuth authentication (preferred over PAT)
 databricks auth login --host https://<workspace-hostname>
 
 # Verify connection
@@ -38,21 +47,29 @@ CREATE SCHEMA IF NOT EXISTS manufacturing.supply_chain;
 CREATE SCHEMA IF NOT EXISTS manufacturing.sales;
 CREATE SCHEMA IF NOT EXISTS manufacturing.iot;
 
--- Grant permissions for multi-tenant access
+-- Grant minimal permissions (least privilege principle)
 GRANT USAGE ON CATALOG manufacturing TO `account users`;
+GRANT USE SCHEMA ON SCHEMA manufacturing.supply_chain TO `supply_chain_users`;
+GRANT USE SCHEMA ON SCHEMA manufacturing.sales TO `sales_users`;
 ```
 
-#### 1.3 Set Up Python Environment
+#### 1.3 Set Up Python Environment with Pinned Versions
 ```bash
-# Create virtual environment
-python -m venv .venv
+# Create virtual environment with Python 3.12+
+python3.12 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install core dependencies
-pip install -r requirements.txt
+# Install pinned dependencies for managed MCP
+pip install -U "mcp>=1.9" \
+              "databricks-sdk[openai]==0.20.0" \
+              "mlflow>=3.1.0" \
+              "databricks-agents>=1.0.0" \
+              "databricks-mcp>=0.1.0" \
+              "langchain==0.2.0" \
+              "langgraph==0.1.0"
 
 # Verify installation
-python verify_setup.py
+python -c "import mlflow; print(mlflow.__version__)"
 ```
 
 ### Phase 2: Data Layer Implementation
@@ -114,13 +131,14 @@ Manual steps in Databricks UI:
    - Add tables: transactions, customers
    - Configure KPI definitions
 
-### Phase 3: Unity Catalog Functions Development
-**Priority: High | Duration: 2 days**
+### Phase 3: Unity Catalog Functions for Managed MCP
+**Priority: Critical | Duration: 2 days**
+**Note**: UC Functions will be exposed through managed MCP servers - no custom infrastructure needed!
 
-#### 3.1 Create predict_shortage UC Function
+#### 3.1 Create predict_shortage UC Function (for Managed MCP)
 Location: `src/uc_functions/predict_shortage.py`
 
-Python function implementation:
+Python function implementation with resource dependency tracking:
 ```python
 def predict_shortage(part_id: str, current_inventory: int, usage_rate: float) -> str:
     """
@@ -550,137 +568,513 @@ if __name__ == "__main__":
     print(f"\nTest result for predict_shortage: {test_result}")
 ```
 
-### Phase 4: MCP Server Implementations
-**Priority: High | Duration: 3 days**
+### Phase 4: ResponsesAgent Development with Managed MCP
+**Priority: Critical | Duration: 3 days**
+**Following**: docs/agents/best-practices-deploying-agents-workflow.md & docs/mlflow/mlflow-agent-development-guide.md
 
-#### 4.1 Implement Custom MCP Server Base
-Location: `src/mcp_servers/custom_server.py`
+#### 4.1 Implement ResponsesAgent with MCP Integration
+Location: `src/agents/manufacturing_agent.py`
 
-Core components:
+Core ResponsesAgent implementation:
 ```python
-from mcp.server import Server, Tool
-from databricks_mcp import DatabricksMCPServer
-
-class ManufacturingMCPServer(DatabricksMCPServer):
-    def __init__(self):
-        super().__init__()
-        self.register_tools()
-    
-    def register_tools(self):
-        # Register IoT tools
-        self.add_tool(Tool(
-            name="query_sensor_data",
-            description="Query IoT sensor telemetry",
-            input_schema={...},
-            handler=self.query_sensor_data
-        ))
-        
-        # Register ticketing tools
-        self.add_tool(Tool(
-            name="create_ticket",
-            description="Create support ticket",
-            input_schema={...},
-            handler=self.create_ticket
-        ))
-```
-
-#### 4.2 Add IoT Sensor Connector
-Location: `src/mcp_servers/iot_connector.py`
-
-Features:
-- Query real-time sensor data
-- Detect anomalies in telemetry
-- Generate maintenance alerts
-- Aggregate sensor statistics
-
-#### 4.3 Add Ticketing System Integration
-Location: `src/mcp_servers/ticketing_connector.py`
-
-Features:
-- Create new tickets
-- Query ticket status
-- Update ticket resolution
-- Search historical tickets
-
-### Phase 5: Agent Orchestrator Development
-**Priority: Critical | Duration: 4 days**
-
-#### 5.1 Implement LangGraph Agent Orchestrator
-Location: `src/agents/orchestrator.py`
-
-Core implementation based on `docs/langgraph-mcp-agent.md`:
-```python
-from langgraph.graph import StateGraph
+from uuid import uuid4
+from mlflow.pyfunc import ResponsesAgent
+from mlflow.types.responses import (
+    ResponsesAgentRequest,
+    ResponsesAgentResponse,
+)
 from databricks_mcp import DatabricksMCPClient
-from typing import TypedDict, Annotated, List
-from langchain_core.messages import BaseMessage, add_messages
+from databricks.sdk import WorkspaceClient
+import asyncio
 
-class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], add_messages]
-    tools: List[Tool]
-    next_action: Optional[str]
+class ManufacturingAgent(ResponsesAgent):
+    """
+    Manufacturing agent using ResponsesAgent interface with managed MCP servers.
+    Follows best practices from docs/agents/best-practices-deploying-agents-workflow.md
+    """
     
-class ManufacturingAgent:
-    def __init__(self, mcp_server_urls: List[str], llm_endpoint: str):
-        self.mcp_server_urls = mcp_server_urls
-        self.llm_endpoint = llm_endpoint
-        self.mcp_client = None
-        self.tools = []
-        self.graph = None
+    def __init__(self):
+        """Initialize agent - keep stateless as per best practices"""
+        # MCP server URLs will be configured at deployment
+        self.mcp_server_urls = []
         
-    async def initialize(self):
-        # Initialize MCP clients
-        # Discover and register tools
-        # Build LangGraph workflow
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        """
+        Process request using managed MCP tools.
+        Initialize resources inside predict for OBO isolation.
+        """
+        # Initialize workspace client inside predict for proper auth
+        w = WorkspaceClient()
+        mcp_client = DatabricksMCPClient(workspace_client=w)
+        
+        # Connect to managed MCP servers
+        servers = [
+            f"https://{w.config.host}/api/2.0/mcp/vector-search/manufacturing/supply_chain",
+            f"https://{w.config.host}/api/2.0/mcp/functions/manufacturing/supply_chain",
+            f"https://{w.config.host}/api/2.0/mcp/genie/{self.genie_space_id}"
+        ]
+        
+        # Run async operations
+        response = asyncio.run(self._process_with_mcp(mcp_client, servers, request))
+        return response
+    
+    async def _process_with_mcp(self, mcp_client, servers, request):
+        """Async processing with MCP tools"""
+        # Connect to all servers
+        for server_url in servers:
+            await mcp_client.connect_server_session(server_url)
+        
+        # Get last user message
+        last_message = None
+        for msg in request.input:
+            if msg.role == 'user':
+                last_message = msg
+        
+        # Process with MCP tools based on user intent
+        # This would include tool selection, execution, and response generation
+        
+        # Create response
+        output_item = self.create_text_output_item(
+            text=f"Processed: {last_message.content if last_message else 'No message'}",
+            id=str(uuid4())
+        )
+        
+        return ResponsesAgentResponse(output=[output_item])
+    
+    def predict_stream(self, request: ResponsesAgentRequest):
+        """Streaming support for better UX"""
+        # Implement streaming version following docs/mlflow/mlflow-agent-development-guide.md
         pass
 ```
 
-#### 5.2 Create MCPTool Wrapper Class
-Location: `src/agents/mcp_tool_wrapper.py`
+#### 4.2 Implement Tool Discovery and Registration
+Location: `src/agents/tool_manager.py`
 
-Convert MCP tools to LangChain-compatible format:
 ```python
-class MCPToolWrapper:
-    def __init__(self, mcp_client, tool_name, tool_description, tool_schema):
-        self.mcp_client = mcp_client
-        self.tool_name = tool_name
-        self.tool_description = tool_description
-        self.tool_schema = tool_schema
+from databricks_mcp import DatabricksMCPClient
+
+class MCPToolManager:
+    """Manages tool discovery from multiple managed MCP servers"""
     
-    async def _arun(self, **kwargs):
-        # Convert arguments and execute MCP tool
-        pass
-    
-    def to_langchain_tool(self) -> Tool:
-        # Return LangChain-compatible tool
-        pass
+    async def discover_all_tools(self, mcp_client, server_urls):
+        """Discover and catalog all available tools"""
+        tools = {}
+        for url in server_urls:
+            await mcp_client.connect_server_session(url)
+            server_tools = await mcp_client.list_tools()
+            for tool in server_tools:
+                tools[tool.name] = {
+                    'description': tool.description,
+                    'schema': tool.input_schema,
+                    'server': url
+                }
+        return tools
 ```
 
-#### 5.3 Implement Multi-MCP Server Connection
-Location: `src/agents/multi_server_manager.py`
+#### 4.3 Resource Dependency Declaration
+Location: `src/agents/resource_config.py`
 
-Features:
-- Parallel server discovery
-- Tool deduplication
-- Connection pooling
-- Retry logic with exponential backoff
+```python
+# Declare all Databricks resources for automatic credential injection
+AGENT_RESOURCES = {
+    "vector_indexes": [
+        "manufacturing.supply_chain.sop_index",
+        "manufacturing.supply_chain.incident_index",
+        "manufacturing.sales.proposal_index"
+    ],
+    "uc_functions": [
+        "manufacturing.supply_chain.predict_shortage",
+        "manufacturing.sales.predict_churn",
+        "manufacturing.supply_chain.create_order"
+    ],
+    "genie_spaces": [
+        "supply_chain_analytics_space_id",
+        "sales_analytics_space_id"
+    ],
+    "serving_endpoints": [
+        "databricks-dbrx-instruct"  # LLM endpoint
+    ]
+}
 
-#### 5.4 Add Conversation State Management
-Location: `src/agents/state_manager.py`
+### Phase 5: MLflow Integration & Agent Development Workflow
+**Priority: Critical | Duration: 3 days**
+**Following**: The 10-step workflow from CLAUDE.md
 
-Implement:
-- Conversation history tracking
-- Context window management
-- State persistence for long conversations
-- Memory summarization for context efficiency
+#### 5.1 Step 1-2: Author & Instrument Agent
+Location: `src/agents/mlflow_integration.py`
 
-### Phase 6: On-Behalf-Of (OBO) Authentication
-**Priority: Critical | Duration: 2 days**
+Implement tracing and autologging:
+```python
+import mlflow
+from mlflow.genai.scorers import Correctness, Safety, RelevanceToQuery
 
-#### 6.1 Configure Auth Policies
+def setup_mlflow_tracking():
+    """Configure MLflow tracking and autologging"""
+    # Set tracking URI
+    mlflow.set_tracking_uri("databricks")
+    
+    # Set experiment
+    mlflow.set_experiment("/Users/<user>/manufacturing-mcp-agent")
+    
+    # Enable autologging for tracing
+    mlflow.langchain.autolog(
+        log_models=True,
+        log_input_examples=True,
+        log_model_signatures=True,
+        log_traces=True  # Enable tracing
+    )
+    
+    # Enable OpenAI autologging if using OpenAI models
+    mlflow.openai.autolog()
+    
+    return mlflow.get_tracking_uri()
+
+@mlflow.trace
+def agent_predict(request):
+    """Traced agent prediction function"""
+    # All operations within this function will be traced
+    pass
+```
+
+#### 5.2 Steps 3-4: Golden Data & Scorers
+Location: `src/evaluation/golden_data.py`
+
+Create evaluation datasets and register scorers:
+```python
+from mlflow.genai.scorers import scorer
+
+# Create golden dataset for supply chain scenarios
+supply_chain_dataset = [
+    {
+        "inputs": {
+            "input": [{"role": "user", "content": "Check inventory for steel bearings"}]
+        },
+        "expectations": {
+            "expected_response": "Current inventory shows 150 units in warehouse A",
+            "expected_tools": ["get_inventory_status"]
+        }
+    },
+    {
+        "inputs": {
+            "input": [{"role": "user", "content": "Predict shortage for PART001"}]
+        },
+        "expectations": {
+            "expected_response": "HIGH risk of shortage in 5 days",
+            "expected_tools": ["predict_shortage"]
+        }
+    }
+]
+
+# Custom scorer for manufacturing domain
+@scorer
+def manufacturing_accuracy(outputs, expectations):
+    """Score accuracy of manufacturing predictions"""
+    # Check if correct tools were called
+    # Validate numerical predictions
+    # Assess recommendation quality
+    score = 0.0
+    
+    # Implementation of scoring logic
+    if "expected_tools" in expectations:
+        # Check tool usage
+        pass
+    
+    return score
+```
+
+#### 5.3 Steps 5-6: Evaluate & Log Agent
+Location: `src/evaluation/evaluate_agent.py`
+
+**Documentation**: This section implements the MLflow logging and prediction patterns based on the [Databricks ResponsesAgent LangGraph documentation](https://docs.databricks.com/aws/en/notebooks/source/generative-ai/responses-agent-langgraph.html). The implementation follows the recommended practices for logging ResponsesAgent models with proper resource dependencies, input/output examples, and comprehensive testing.
+
+**Key Features**:
+- **Proper MLflow Logging**: Uses `mlflow.pyfunc.log_model` with ResponsesAgent-specific configuration
+- **Resource Dependencies**: Logs all Databricks resources (endpoints, functions, MCP servers) for automatic credential injection
+- **Input/Output Examples**: Provides proper schema examples for model signature inference
+- **Local Testing**: Implements both `mlflow.pyfunc.load_model` and `mlflow.models.predict` testing patterns
+- **Comprehensive Metadata**: Logs evaluation metrics, model parameters, and framework information
+
+```python
+import mlflow
+from mlflow.pyfunc import log_model
+from mlflow.genai.scorers import Correctness, Safety, RelevanceToQuery
+
+def evaluate_and_log_agent(agent, golden_dataset, resources):
+    """Steps 5-6: Evaluate agent quality and log with version tracking"""
+    
+    # Step 5: Evaluate agent performance
+    results = mlflow.genai.evaluate(
+        model=agent,
+        data=golden_dataset,
+        scorers=[
+            Correctness(),
+            Safety(),
+            RelevanceToQuery(),
+            manufacturing_accuracy  # Custom scorer
+        ]
+    )
+    
+    # Step 6: Log agent with resource dependencies and proper configuration
+    with mlflow.start_run() as run:
+        # Log the ResponsesAgent model with all dependencies
+        logged_agent_info = mlflow.pyfunc.log_model(
+            name="manufacturing_agent",
+            python_model="agent.py",  # ResponsesAgent instance needs to be code
+            resources=resources,  # Databricks resources (endpoints, functions, etc.)
+            pip_requirements=[
+                "mlflow>=3.1.0",
+                "databricks-agents>=1.0.0", 
+                "databricks-mcp>=1.0.0",
+                "langgraph>=0.3.4",
+                "databricks-langchain>=0.1.0"
+            ],
+            input_example={
+                "input": [
+                    {"role": "user", "content": "What is the current inventory status for product ABC123?"}
+                ]
+            },
+            signature=mlflow.models.infer_signature(
+                model_input={
+                    "input": [
+                        {"role": "user", "content": "Sample manufacturing query"}
+                    ]
+                },
+                model_output={
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "text", "text": "Sample response"}]
+                        }
+                    ]
+                }
+            )
+        )
+        
+        # Log evaluation metrics
+        mlflow.log_metrics({
+            "correctness_score": results.metrics.get("correctness", 0.0),
+            "safety_score": results.metrics.get("safety", 0.0),
+            "relevance_score": results.metrics.get("relevance", 0.0),
+            "manufacturing_accuracy": results.metrics.get("manufacturing_accuracy", 0.0)
+        })
+        
+        # Log model metadata
+        mlflow.log_param("agent_type", "ResponsesAgent")
+        mlflow.log_param("framework", "LangGraph")
+        mlflow.log_param("mcp_integration", True)
+        
+        return run.info.run_id, logged_agent_info
+
+def test_logged_agent(logged_agent_info):
+    """Test the logged agent locally before deployment"""
+    
+    # Test the logged model using mlflow.pyfunc.load_model
+    loaded_agent = mlflow.pyfunc.load_model(logged_agent_info.model_uri)
+    
+    # Test with sample manufacturing queries
+    test_inputs = [
+        {
+            "input": [
+                {"role": "user", "content": "What is the current inventory level for product SKU-12345?"}
+            ]
+        },
+        {
+            "input": [
+                {"role": "user", "content": "Show me the production schedule for next week"}
+            ]
+        },
+        {
+            "input": [
+                {"role": "user", "content": "Are there any quality issues with batch B789?"}
+            ]
+        }
+    ]
+    
+    print("Testing logged agent locally...")
+    for i, test_input in enumerate(test_inputs, 1):
+        try:
+            # Use mlflow.pyfunc.predict for local testing
+            result = loaded_agent.predict(test_input)
+            print(f"Test {i} - Success:")
+            print(f"  Input: {test_input['input'][0]['content']}")
+            print(f"  Output: {result['output'][0]['content'][0]['text'][:100]}...")
+            print()
+        except Exception as e:
+            print(f"Test {i} - Error: {str(e)}")
+    
+    return True
+
+def predict_with_mlflow_models(model_uri, input_data):
+    """
+    Alternative prediction method using mlflow.models.predict
+    Useful for testing different model URIs and input formats
+    """
+    
+    # Use mlflow.models.predict for flexible model testing
+    result = mlflow.models.predict(
+        model_uri=model_uri,
+        input_data=input_data,
+        env_manager="conda"  # or "virtualenv", "local"
+    )
+    
+    return result
+
+# Usage Example: Complete Evaluation and Testing Workflow
+def complete_agent_evaluation_workflow():
+    """
+    Complete example demonstrating the evaluation, logging, and testing workflow
+    Based on Databricks ResponsesAgent LangGraph patterns
+    """
+    
+    # Step 1: Load your trained ResponsesAgent
+    from src.agents.manufacturing_agent import ManufacturingResponsesAgent
+    agent = ManufacturingResponsesAgent(
+        mcp_server_urls=["https://workspace/api/2.0/mcp/genie/space_id"],
+        llm_endpoint="databricks-meta-llama-3-3-70b-instruct"
+    )
+    
+    # Step 2: Prepare evaluation dataset
+    golden_dataset = [
+        {
+            "inputs": {
+                "input": [{"role": "user", "content": "What is the inventory status for SKU-12345?"}]
+            },
+            "expected_response": "Current inventory for SKU-12345 is 150 units"
+        },
+        {
+            "inputs": {
+                "input": [{"role": "user", "content": "Show production schedule for line A"}]
+            },
+            "expected_response": "Production line A schedule shows 3 batches planned"
+        }
+    ]
+    
+    # Step 3: Define resources (from resource_config.py)
+    from src.config.resource_config import get_manufacturing_resources
+    resources = get_manufacturing_resources()
+    
+    # Step 4: Evaluate and log the agent
+    run_id, logged_agent_info = evaluate_and_log_agent(
+        agent=agent,
+        golden_dataset=golden_dataset,
+        resources=resources
+    )
+    
+    print(f"Agent logged successfully. Run ID: {run_id}")
+    print(f"Model URI: {logged_agent_info.model_uri}")
+    
+    # Step 5: Test the logged agent locally
+    test_success = test_logged_agent(logged_agent_info)
+    
+    # Step 6: Alternative testing with mlflow.models.predict
+    test_input = {
+        "input": [
+            {"role": "user", "content": "Check quality metrics for batch B789"}
+        ]
+    }
+    
+    result = predict_with_mlflow_models(
+        model_uri=logged_agent_info.model_uri,
+        input_data=test_input
+    )
+    
+    print("Alternative prediction result:", result)
+    
+    return logged_agent_info
+
+# Example: Testing different model URIs
+def test_different_model_uris():
+    """
+    Example showing how to test models using different URI formats
+    """
+    
+    # Test with run URI
+    run_uri = "runs:/abc123def456/manufacturing_agent"
+    
+    # Test with registered model URI  
+    registered_uri = "models:/manufacturing_agent/1"
+    
+    # Test with latest version
+    latest_uri = "models:/manufacturing_agent/latest"
+    
+    test_input = {
+        "input": [
+            {"role": "user", "content": "What is the current production status?"}
+        ]
+    }
+    
+    for uri_name, model_uri in [
+        ("Run URI", run_uri),
+        ("Registered Model", registered_uri), 
+        ("Latest Version", latest_uri)
+    ]:
+        try:
+            result = predict_with_mlflow_models(model_uri, test_input)
+            print(f"{uri_name} - Success: {result['output'][0]['content'][0]['text'][:50]}...")
+        except Exception as e:
+            print(f"{uri_name} - Error: {str(e)}")
+```
+
+#### 5.4 Steps 7-10: Deploy, Monitor, Collect Feedback & Iterate
+Location: `src/deployment/deploy_monitor.py`
+
+```python
+from mlflow.deployments import get_deploy_client
+from mlflow.genai import create_monitor
+
+def deploy_and_monitor_agent(model_name, version):
+    """Steps 7-10: Deploy agent and set up monitoring"""
+    
+    # Step 7: Register & Deploy with auth policies
+    client = get_deploy_client("databricks")
+    
+    # Deploy with resource policies
+    deployment = client.create_deployment(
+        name="manufacturing-agent-endpoint",
+        model_uri=f"models:/{model_name}/{version}",
+        config={
+            "served_entities": [{
+                "name": "manufacturing-agent",
+                "entity_version": version,
+                "scale_to_zero_enabled": True,
+                "workload_size": "Small",
+                "min_provisioned_throughput": 0,
+                "max_provisioned_throughput": 100
+            }],
+            "auto_capture_config": {
+                "catalog_name": "manufacturing",
+                "schema_name": "agent_logs",
+                "table_name_prefix": "manufacturing_agent"
+            }
+        }
+    )
+    
+    # Step 8: Monitor production with same scorers
+    monitor = mlflow.genai.create_monitor(
+        name="manufacturing_agent_monitor",
+        endpoint=f"endpoints:/{deployment.name}",
+        scorers=[
+            Correctness(),
+            Safety(), 
+            manufacturing_accuracy
+        ],
+        sampling_rate=0.1  # Monitor 10% of traffic
+    )
+    
+    # Step 9: Collect feedback (automated via Review App)
+    # Step 10: Iterate based on feedback
+    
+    return deployment, monitor
+```
+
+### Phase 6: Optional On-Behalf-Of (OBO) Authentication
+**Priority: Medium | Duration: 1 day**
+**Note**: Only implement if per-user scoping is required. Default to automatic auth passthrough.
+
+#### 6.1 Configure Auth Policies (If Needed)
 Location: `src/auth/policies.py`
 
-Based on `docs/deploying-on-behalf-of-user-agents.md`:
+Based on `docs/agents/deploying-on-behalf-of-user-agents.md`:
 ```python
 from mlflow.models.auth_policy import UserAuthPolicy, SystemAuthPolicy, AuthPolicy
 
@@ -733,85 +1127,50 @@ Test scenarios:
 - Vector Search respects permissions
 - UC Functions honor row-level security
 
-### Phase 7: MLflow 3.0 Integration
-**Priority: High | Duration: 3 days**
+### Phase 7: Optional Custom MCP Server (Only if Needed)
+**Priority: Low | Duration: 2 days**
+**Note**: Only implement if you have specialized logic not covered by managed MCP servers
 
-#### 7.1 Configure MLflow Tracing
-Location: `src/monitoring/mlflow_config.py`
+#### 7.1 Custom MCP Server for External APIs
+Location: `src/mcp_servers/custom_external.py`
 
-Based on `docs/mlflow3-documentation-guide.md`:
+Only if integrating with non-Databricks systems:
 ```python
-import mlflow
+from mcp.server import Server, Tool
+from databricks_mcp import DatabricksMCPServer
 
-def configure_mlflow():
-    # Set tracking URI
-    mlflow.set_tracking_uri("databricks")
+class ExternalAPIMCPServer(DatabricksMCPServer):
+    """Custom MCP server for external integrations"""
     
-    # Set experiment
-    mlflow.set_experiment("/Users/<user>/manufacturing-mcp-agent")
+    def __init__(self):
+        super().__init__()
+        # Only add tools not available via managed MCP
+        self.register_external_tools()
     
-    # Enable autologging
-    mlflow.openai.autolog()
-    mlflow.langchain.autolog(
-        log_models=True,
-        log_input_examples=True,
-        log_model_signatures=True,
-        log_traces=True
-    )
+    def register_external_tools(self):
+        # Example: External ERP system integration
+        self.add_tool(Tool(
+            name="query_external_erp",
+            description="Query external ERP system",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                }
+            },
+            handler=self.query_external_erp
+        ))
 ```
 
-#### 7.2 Implement Custom Scorers
-Location: `src/monitoring/scorers.py`
-
-Manufacturing-specific scorers:
-```python
-from mlflow.genai.scorers import scorer
-from mlflow.entities import Feedback
-
-@scorer
-def supply_chain_accuracy(outputs, expectations):
-    """Score accuracy of supply chain predictions"""
-    # Check if shortage predictions match actual
-    # Validate inventory recommendations
-    # Assess delivery time estimates
-    pass
-
-@scorer
-def sales_relevance(outputs, expectations):
-    """Score relevance of sales insights"""
-    # Check KPI accuracy
-    # Validate churn predictions
-    # Assess proposal quality
-    pass
-```
-
-#### 7.3 Create Evaluation Datasets
-Location: `src/evaluation/datasets.py`
-
-Datasets to create:
-- Supply chain scenarios (50+ examples)
-- Sales interactions (50+ examples)
-- Edge cases and error conditions
-- Multi-turn conversations
-
-#### 7.4 Set Up Production Monitoring
-Location: `src/monitoring/production_monitor.py`
-
-```python
-from mlflow.genai import create_monitor
-
-def setup_monitoring(endpoint_name: str):
-    monitor = mlflow.genai.create_monitor(
-        name="manufacturing_agent_monitor",
-        endpoint=f"endpoints:/{endpoint_name}",
-        scorers=[
-            Safety(),
-            RelevanceToQuery(),
-            supply_chain_accuracy,
-            sales_relevance
-        ],
-        sampling_rate=0.1  # Monitor 10% of traffic
-    )
+#### 7.2 Deploy Custom MCP Server on Databricks Apps
+```yaml
+# src/mcp_servers/app.yaml
+name: manufacturing-custom-mcp
+description: Custom MCP server for external integrations only
+entry_point: main.py
+environment:
+  DATABRICKS_HOST: ${DATABRICKS_HOST}
+  DATABRICKS_TOKEN: ${DATABRICKS_TOKEN}
 ```
 
 ### Phase 8: Databricks App UI Development
@@ -978,111 +1337,116 @@ Security tests:
 - SQL injection prevention
 - Authentication flow validation
 
-## Implementation Priority Order
+## Simplified Implementation Priority Order
 
-### Week 1: Foundation
-1. Phase 1: Environment Setup (Day 1)
-2. Phase 2.1-2.2: Delta Tables & Data Generation (Days 2-3)
-3. Phase 5.1-5.2: Core Agent Implementation (Days 4-5)
+### Week 1: Foundation & Core Agent
+1. **Day 1**: Phase 1 - Environment Setup with pinned versions
+2. **Days 2-3**: Phase 2 - Data Layer (Delta tables, sample data)
+3. **Days 4-5**: Phase 3 - UC Functions for managed MCP
 
-### Week 2: Core Functionality
-1. Phase 3: UC Functions (Days 6-7)
-2. Phase 4: Custom MCP Server (Days 8-10)
+### Week 2: Agent Development (10-Step Workflow)
+1. **Days 6-7**: Phase 4 - ResponsesAgent implementation
+2. **Days 8-10**: Phase 5 - MLflow integration (tracing, evaluation, deployment)
 
-### Week 3: Advanced Features
-1. Phase 6: OBO Authentication (Days 11-12)
-2. Phase 7: MLflow Integration (Days 13-15)
+### Week 3: Testing & Optional Features
+1. **Days 11-12**: Phase 10 - Testing & validation
+2. **Day 13**: Phase 6 - OBO authentication (only if needed)
+3. **Days 14-15**: Phase 7 - Custom MCP server (only if needed)
 
-### Week 4: UI & Deployment
-1. Phase 8: UI Development (Days 16-18)
-2. Phase 9: Deployment (Days 19-20)
+### Week 4: UI & Production
+1. **Days 16-18**: Phase 8 - Databricks App UI
+2. **Days 19-20**: Phase 9 - Production deployment & monitoring
 
-### Week 5: Testing & Polish
-1. Phase 10: Testing (Days 21-22)
-2. Phase 2.3-2.4: Vector Search & Genie (Days 23-24)
-3. Final integration and documentation (Day 25)
+## Key Implementation Files to Create (Prioritized)
 
-## Key Implementation Files to Create
-
-### Core Agent Files
-- `src/agents/orchestrator.py` - Main agent orchestrator
-- `src/agents/mcp_tool_wrapper.py` - MCP to LangChain wrapper
-- `src/agents/state_manager.py` - Conversation state management
-- `src/agents/register_agent.py` - Agent registration script
-
-### MCP Server Files
-- `src/mcp_servers/custom_server.py` - Custom MCP server base
-- `src/mcp_servers/iot_connector.py` - IoT integration
-- `src/mcp_servers/ticketing_connector.py` - Ticketing system
-- `src/mcp_servers/app.yaml` - Databricks App config
-
-### Data Layer Files
+### Phase 1-2: Foundation Files
+- `requirements.txt` - Pinned dependencies
 - `src/data/create_tables.py` - Delta table creation
 - `src/data/generate_data.py` - Synthetic data generation
 - `src/data/create_vector_indexes.py` - Vector index setup
 
-### UC Function Files
+### Phase 3: UC Functions (for Managed MCP)
 - `src/uc_functions/predict_shortage.py` - Shortage prediction
 - `src/uc_functions/predict_churn.py` - Churn prediction
 - `src/uc_functions/create_order.py` - Order automation
+- `src/uc_functions/register_all_functions.py` - Function registration
 
-### Authentication Files
-- `src/auth/policies.py` - Auth policy configuration
-- `src/auth/obo_client.py` - OBO client implementation
+### Phase 4: ResponsesAgent Files (Priority)
+- `src/agents/manufacturing_agent.py` - Main ResponsesAgent implementation
+- `src/agents/tool_manager.py` - MCP tool discovery
+- `src/agents/resource_config.py` - Resource dependency declaration
 
-### Monitoring Files
-- `src/monitoring/mlflow_config.py` - MLflow configuration
-- `src/monitoring/scorers.py` - Custom scorers
-- `src/monitoring/production_monitor.py` - Production monitoring
+### Phase 5: MLflow Integration (10-Step Workflow)
+- `src/agents/mlflow_integration.py` - Tracing & autologging setup
+- `src/evaluation/golden_data.py` - Evaluation datasets
+- `src/evaluation/evaluate_agent.py` - Agent evaluation
+- `src/deployment/deploy_monitor.py` - Deployment & monitoring
 
-### UI Files
+### Phase 6: Optional Authentication
+- `src/auth/policies.py` - Auth policy configuration (if OBO needed)
+- `src/auth/obo_client.py` - OBO client implementation (if needed)
+
+### Phase 7: Optional Custom MCP
+- `src/mcp_servers/custom_external.py` - External API integration (if needed)
+- `src/mcp_servers/app.yaml` - Databricks App config (if needed)
+
+### Phase 8: UI Files
 - `src/app/main.py` - FastAPI backend
-- `src/app/templates/supply_chain.html` - Supply chain UI
-- `src/app/templates/sales.html` - Sales UI
+- `src/app/templates/index.html` - Main UI
 - `src/app/api/agent.py` - Agent API endpoints
 
-### Test Files
-- `tests/unit/test_agent.py` - Agent unit tests
-- `tests/integration/test_workflows.py` - Workflow tests
-- `tests/security/test_tenant_isolation.py` - Security tests
+### Phase 10: Test Files
+- `tests/unit/test_agent.py` - ResponsesAgent unit tests
+- `tests/integration/test_mcp_integration.py` - MCP integration tests
+- `tests/test_golden_data.py` - Evaluation dataset tests
 
 ## Success Criteria
 
 1. **Functional Requirements**
-   - ✅ Multi-tenant support with proper isolation
-   - ✅ All three managed MCP servers integrated
-   - ✅ Custom MCP server deployed and functional
-   - ✅ Both use cases (Supply Chain & Sales) working
-   - ✅ MLflow tracing and evaluation operational
+   - ✅ ResponsesAgent interface fully implemented
+   - ✅ All three managed MCP servers integrated (Vector Search, UC Functions, Genie)
+   - ✅ Both use cases working (Supply Chain & Sales)
+   - ✅ MLflow 3.0 tracing, evaluation, and monitoring operational
+   - ✅ 10-step agent workflow completed
 
 2. **Performance Requirements**
    - ✅ Response time < 2 seconds (p95)
+   - ✅ Streaming support for better UX
    - ✅ Support 100+ concurrent users
    - ✅ Vector search latency < 500ms
 
 3. **Security Requirements**
-   - ✅ OBO authentication working
+   - ✅ Automatic auth passthrough for managed resources
    - ✅ Unity Catalog permissions enforced
-   - ✅ No cross-tenant data leakage
+   - ✅ Resource dependencies declared and logged
+   - ✅ OBO authentication available when needed
 
 4. **Quality Requirements**
    - ✅ 80%+ test coverage
-   - ✅ All scorers passing thresholds
-   - ✅ Documentation complete
+   - ✅ Golden datasets created and versioned
+   - ✅ Custom scorers implemented and passing
+   - ✅ Production monitoring with same scorers
 
 ## Next Steps
 
-1. Begin with Phase 1 environment setup
-2. Follow the priority order for implementation
-3. Test each phase before moving to the next
-4. Document any deviations or improvements
-5. Create demo scripts for showcasing the system
+1. **Start simple**: Begin with Phase 1 environment setup
+2. **Prioritize managed MCP**: Use managed servers before custom
+3. **Follow the 10-step workflow**: From CLAUDE.md for agent development
+4. **Test continuously**: Each phase before moving to next
+5. **Document resource dependencies**: For automatic credential injection
 
-## References
+## Key Documentation References
 
-- [CLAUDE.md](./CLAUDE.md) - Project context and guidelines
-- [PRD.md](./PRD.md) - Product requirements
-- [docs/managed-mcp-servers-guide.md](./docs/managed-mcp-servers-guide.md) - MCP server implementation
-- [docs/langgraph-mcp-agent.md](./docs/langgraph-mcp-agent.md) - LangGraph agent patterns
-- [docs/deploying-on-behalf-of-user-agents.md](./docs/deploying-on-behalf-of-user-agents.md) - OBO authentication
-- [docs/mlflow3-documentation-guide.md](./docs/mlflow3-documentation-guide.md) - MLflow 3.0 integration
+### Agent Development Guides
+- [docs/agents/best-practices-deploying-agents-workflow.md](./docs/agents/best-practices-deploying-agents-workflow.md) - 10-step workflow
+- [docs/agents/databricks-agent-uc-tools.md](./docs/agents/databricks-agent-uc-tools.md) - UC Functions integration
+- [docs/agents/langgraph-mcp-agent.md](./docs/agents/langgraph-mcp-agent.md) - LangGraph patterns
+- [docs/agents/deploying-on-behalf-of-user-agents.md](./docs/agents/deploying-on-behalf-of-user-agents.md) - OBO auth
+
+### MCP Guides
+- [docs/mcp/managed-mcp-servers-guide.md](./docs/mcp/managed-mcp-servers-guide.md) - Managed MCP implementation
+- [docs/mcp/databricks-mcp-documentation.md](./docs/mcp/databricks-mcp-documentation.md) - Core MCP concepts
+
+### MLflow Guides
+- [docs/mlflow/mlflow-agent-development-guide.md](./docs/mlflow/mlflow-agent-development-guide.md) - ResponsesAgent interface
+- [docs/mlflow/mlflow3-documentation-guide.md](./docs/mlflow/mlflow3-documentation-guide.md) - MLflow 3.0 features

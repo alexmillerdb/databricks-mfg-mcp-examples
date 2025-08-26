@@ -153,16 +153,22 @@ with mlflow.start_run():
 
 ## Pattern for OBO Client Initialization
 
-Always create the OBO-aware (user-credentialed) client **inside** the serving method—**not** at agent/module initialization. Example for a Databricks ChatAgent:
+Always create the OBO-aware (user-credentialed) client **inside** the serving method—**not** at agent/module initialization. Example for a Databricks ResponsesAgent:
 
 ```python
-from mlflow.pyfunc import ChatAgent
+from uuid import uuid4
+from mlflow.pyfunc import ResponsesAgent
+from mlflow.types.responses import (
+    ResponsesAgentRequest,
+    ResponsesAgentResponse,
+)
 from databricks.sdk import WorkspaceClient
 from databricks_ai_bridge import ModelServingUserCredentials
 from databricks_langchain.genie import GenieAgent
 
-class MyGenieChatAgent(ChatAgent):
-    def predict(self, messages, context=None, custom_inputs=None):
+class MyGenieResponsesAgent(ResponsesAgent):
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        # Initialize OBO client inside predict method
         user_client = WorkspaceClient(
             credentials_strategy=ModelServingUserCredentials()
         )
@@ -172,8 +178,18 @@ class MyGenieChatAgent(ChatAgent):
             description="Genie Agent",
             client=user_client  # This enforces OBO!
         )
-        # Now make Genie/MCP queries as the user
-        # ...process response and return
+        
+        # Convert request to genie format and process
+        messages = [msg.model_dump() for msg in request.input]
+        response_text = genie_agent.invoke(messages)
+        
+        # Create response output
+        output_item = self.create_text_output_item(
+            text=response_text,
+            id=str(uuid4())
+        )
+        
+        return ResponsesAgentResponse(output=[output_item])
 ```
 
 ---

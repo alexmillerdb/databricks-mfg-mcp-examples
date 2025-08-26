@@ -1,16 +1,16 @@
 # Systematic Process Flow & Best Practices for Developing, Evaluating, Registering, and Deploying Databricks Agents with MLflow 3
 
-This guide distills actionable best practices and a clear step-by-step process for building robust, production-ready GenAI and assistant agents using the Databricks Agents ecosystem, MLflow 3, the ChatAgent/ResponsesAgent interfaces, and Model Serving. Use these stages to drive reliable development, tight evaluation, secure deployment, and traceable observability.
+This guide distills actionable best practices and a clear step-by-step process for building robust, production-ready GenAI and assistant agents using the Databricks Agents ecosystem, MLflow 3, the ResponsesAgent interface, and Model Serving. Use these stages to drive reliable development, tight evaluation, secure deployment, and traceable observability.
 
 ---
 
 ## 1\. Author Your Agent – Structure and Patterns
 
-**Choose the correct interface:**
+**Use the recommended interface:**
 
-- **ChatAgent:** For conversational, tool-calling, or OpenAI-compatible agents. Implements `predict` (or `predict_stream` for streaming).  
-- **ResponsesAgent:** For modern, multi-turn, multi-agent, and attachment-capable apps (recommended for new projects).  
-- Both must process message history and return output(s) in the correct schema (see schema docs).
+- **ResponsesAgent:** The modern, recommended interface for all new agent projects. Supports multi-turn conversations, multi-agent systems, streaming, tool-calling, and attachment-capable apps.
+- **Legacy ChatAgent:** Still supported but not recommended for new projects. Use ResponsesAgent for all new development.
+- Agents must process message history and return output(s) in the correct schema (see schema docs).
 
 **Best Practices:**
 
@@ -19,25 +19,31 @@ This guide distills actionable best practices and a clear step-by-step process f
 - Place any user-specific resource initialization (e.g., OBO-aware clients) **inside** the `predict` method for serving isolation.  
 - Support streaming (`predict_stream`) for better UX if possible.
 
-**Example (ChatAgent):**
+**Example (ResponsesAgent):**
 
 ```python
-from mlflow.pyfunc import ChatAgent
-from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
-import uuid
+from uuid import uuid4
+from mlflow.pyfunc import ResponsesAgent
+from mlflow.types.responses import (
+    ResponsesAgentRequest,
+    ResponsesAgentResponse,
+)
 
-class EchoAgent(ChatAgent):
-    def predict(self, messages, context=None, custom_inputs=None):
-        last = [m for m in messages if m.role == 'user'][-1]
-        return ChatAgentResponse(
-            messages=[
-                ChatAgentMessage(
-                    id=str(uuid.uuid4()), 
-                    role='assistant', 
-                    content="Echo: " + last.content
-                )
-            ]
+class EchoAgent(ResponsesAgent):
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        # Get the last user message
+        last_message = None
+        for msg in request.input:
+            if msg.role == 'user':
+                last_message = msg
+        
+        # Create response
+        output_item = self.create_text_output_item(
+            text=f"Echo: {last_message.content}",
+            id=str(uuid4())
         )
+        
+        return ResponsesAgentResponse(output=[output_item])
 ```
 
 ---
@@ -74,7 +80,9 @@ Construct datasets from real user interactions, bug cases, and key scenarios.
 ```python
 eval_dataset = [
     {
-        "inputs": {"input": "What's the weather in Paris?"}, 
+        "inputs": {
+            "input": [{"role": "user", "content": "What's the weather in Paris?"}]
+        }, 
         "expectations": {"expected_response": "sunny"}
     }
     # Extend with more samples

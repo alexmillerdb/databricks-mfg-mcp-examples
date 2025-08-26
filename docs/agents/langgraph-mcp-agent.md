@@ -199,8 +199,14 @@ def create_tool_calling_agent(llm, tools: List[Tool]):
 
 #### 7. Mosaic AI Compatible Agent Wrapper
 ```python
-class LangGraphResponsesAgent(Agent):
-    """Agent wrapper for Mosaic AI deployment"""
+from mlflow.pyfunc import ResponsesAgent
+from mlflow.types.responses import (
+    ResponsesAgentRequest,
+    ResponsesAgentResponse,
+)
+
+class LangGraphResponsesAgent(ResponsesAgent):
+    """ResponsesAgent wrapper for Mosaic AI deployment"""
     
     def __init__(self, mcp_server_urls: List[str], llm_endpoint: str):
         self.mcp_server_urls = mcp_server_urls
@@ -229,16 +235,16 @@ class LangGraphResponsesAgent(Agent):
             # Create agent
             self.agent = create_tool_calling_agent(llm, self.tools)
     
-    def predict(self, model_input: Dict[str, Any]) -> Dict[str, Any]:
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """Synchronous prediction method for MLflow"""
-        return asyncio.run(self.apredict(model_input))
+        return asyncio.run(self.apredict(request))
     
-    async def apredict(self, model_input: Dict[str, Any]) -> Dict[str, Any]:
+    async def apredict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """Async prediction with streaming support"""
         await self._initialize()
         
         # Convert input to messages
-        messages = self._parse_messages(model_input.get("messages", []))
+        messages = self._parse_messages([msg.model_dump() for msg in request.input])
         
         # Create initial state
         initial_state = {
@@ -253,10 +259,13 @@ class LangGraphResponsesAgent(Agent):
         # Extract response
         response_message = result["messages"][-1]
         
-        return {
-            "content": response_message.content,
-            "tool_calls": getattr(response_message, "tool_calls", [])
-        }
+        # Create output item
+        output_item = self.create_text_output_item(
+            text=response_message.content,
+            id=str(uuid4())
+        )
+        
+        return ResponsesAgentResponse(output=[output_item])
     
     def _parse_messages(self, messages: List[Dict]) -> List[BaseMessage]:
         """Convert dict messages to LangChain messages"""
@@ -333,15 +342,13 @@ await mcp_client.connect_server_session(
 #### Custom MCP Server with OAuth
 ```python
 # OAuth configuration for custom servers
-oauth_config = {
-    "client_id": "your-client-id",
-    "client_secret": "your-client-secret",
-    "token_url": "https://custom-server/oauth/token"
-}
-
 custom_client = DatabricksMCPClient(
     workspace_client=WorkspaceClient(),
-    oauth_config=oauth_config
+    oauth_config={
+        "client_id": "your-client-id",
+        "client_secret": "your-client-secret",
+        "token_url": "https://custom-server/oauth/token"
+    }
 )
 ```
 
@@ -365,98 +372,48 @@ async def robust_tool_call(mcp_client, tool_name, arguments, max_retries=3):
 ### Testing the Agent
 ```python
 # Test with simple query
-test_input = {
-    "messages": [
+from mlflow.types.responses import ResponsesAgentRequest
+
+test_request = ResponsesAgentRequest(
+    input=[
         {"role": "user", "content": "What is 7*6 in Python?"}
     ]
-}
+)
 
-result = agent.predict(test_input)
-print(f"Agent response: {result['content']}")
+result = agent.predict(test_request)
+print(f"Agent response: {result.output[0].content[0].text}")
 
 # Test with tool-requiring query
-test_input_with_tools = {
-    "messages": [
+test_request_with_tools = ResponsesAgentRequest(
+    input=[
         {"role": "user", "content": "Search for customer churn predictions in the vector index"}
     ]
-}
+)
 
-result = agent.predict(test_input_with_tools)
-print(f"Tool calls made: {result.get('tool_calls', [])}")
-print(f"Final response: {result['content']}")
+result = agent.predict(test_request_with_tools)
+print(f"Final response: {result.output[0].content[0].text}")
 ```
 
 ### Performance Optimization
 
-#### Tool Caching
-```python
-class CachedMCPAgent(LangGraphResponsesAgent):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._tool_cache = {}
-        self._cache_ttl = 3600  # 1 hour
-    
-    async def _get_cached_tools(self, server_url):
-        """Get tools with caching"""
-        if server_url in self._tool_cache:
-            cached_time, tools = self._tool_cache[server_url]
-            if time.time() - cached_time < self._cache_ttl:
-                return tools
-        
-        # Fetch fresh tools
-        tools = await self._fetch_tools(server_url)
-        self._tool_cache[server_url] = (time.time(), tools)
-        return tools
-```
-
-#### Parallel Tool Discovery
-```python
-async def parallel_tool_discovery(mcp_client, server_urls):
-    """Discover tools from multiple servers in parallel"""
-    tasks = []
-    for url in server_urls:
-        task = asyncio.create_task(
-            discover_server_tools(mcp_client, url)
-        )
-        tasks.append(task)
-    
-    results = await asyncio.gather(*tasks)
-    
-    # Flatten results
-    all_tools = []
-    for server_tools in results:
-        all_tools.extend(server_tools)
-    
-    return all_tools
-```
+For production deployments, consider:
+- **Tool caching**: Cache discovered tools with TTL to reduce server calls
+- **Parallel discovery**: Discover tools from multiple servers concurrently
+- **Connection pooling**: Reuse MCP client connections when possible
 
 ### Monitoring and Observability
 
 ```python
-# Enable MLflow autologging
+# Enable comprehensive MLflow autologging
 mlflow.langchain.autolog(
     log_models=True,
-    log_input_examples=True,
-    log_model_signatures=True,
     log_traces=True
 )
 
-# Custom metrics logging
+# Track key metrics during agent execution
 with mlflow.start_run():
-    # Track tool usage
     mlflow.log_metric("num_tools_discovered", len(tools))
     mlflow.log_metric("num_mcp_servers", len(MCP_SERVER_URLS))
-    
-    # Track performance
-    start_time = time.time()
-    result = agent.predict(test_input)
-    mlflow.log_metric("inference_time", time.time() - start_time)
-    
-    # Log tool call details
-    if "tool_calls" in result:
-        mlflow.log_metric("num_tool_calls", len(result["tool_calls"]))
-        for i, tool_call in enumerate(result["tool_calls"]):
-            mlflow.log_param(f"tool_{i}_name", tool_call.get("name"))
 ```
 
 ## Related Resources

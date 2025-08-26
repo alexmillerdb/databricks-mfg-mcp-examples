@@ -73,12 +73,20 @@ The system demonstrates MCP-based agent orchestration with:
 
 ### Local Implementation Guides
 **IMPORTANT**: Always reference the `docs/` folder for detailed implementation examples and code patterns:
-- **[docs/best-practices-deploying-agents-workflow.md](./docs/best-practices-deploying-agents-workflow.md)** - Best practices for developing, evaluating, and deploying Agents on Databricks. ALWAYS FOLLOW THIS WORKFLOW
-- **[docs/managed-mcp-servers-guide.md](./docs/managed-mcp-servers-guide.md)** - Complete guide for building agents with managed MCP servers
-- **[docs/langgraph-mcp-agent.md](./docs/langgraph-mcp-agent.md)** - LangGraph agent implementation with full code examples
-- **[docs/databricks-mcp-documentation.md](./docs/databricks-mcp-documentation.md)** - Core MCP concepts and architecture
-- **[docs/deploying-on-behalf-of-user-agents.md](./docs/deploying-on-behalf-of-user-agents.md)** - On-Behalf-Of authentication for multi-tenant agents with Unity Catalog integration
--- **[docs/mlflow3-documentation-guide.md](./docs/mlflow3-documentation-guide.md)** - MLflow3 GenAI apps documentation guide
+
+#### Agent Development (`docs/agents/`)
+- **[docs/agents/best-practices-deploying-agents-workflow.md](./docs/agents/best-practices-deploying-agents-workflow.md)** - Best practices for developing, evaluating, and deploying Agents on Databricks. ALWAYS FOLLOW THIS WORKFLOW
+- **[docs/agents/databricks-agent-uc-tools.md](./docs/agents/databricks-agent-uc-tools.md)** - Unity Catalog functions integration with Databricks Agent Framework for custom tool creation
+- **[docs/agents/langgraph-mcp-agent.md](./docs/agents/langgraph-mcp-agent.md)** - LangGraph agent implementation with MCP integration and full code examples
+- **[docs/agents/deploying-on-behalf-of-user-agents.md](./docs/agents/deploying-on-behalf-of-user-agents.md)** - On-Behalf-Of authentication for multi-tenant agents with Unity Catalog integration
+
+#### MCP Integration (`docs/mcp/`)
+- **[docs/mcp/managed-mcp-servers-guide.md](./docs/mcp/managed-mcp-servers-guide.md)** - Complete guide for building agents with managed MCP servers
+- **[docs/mcp/databricks-mcp-documentation.md](./docs/mcp/databricks-mcp-documentation.md)** - Core MCP concepts and architecture
+
+#### MLflow & Observability (`docs/mlflow/`)
+- **[docs/mlflow/mlflow-agent-development-guide.md](./docs/mlflow/mlflow-agent-development-guide.md)** - Complete guide for developing, logging, and deploying agents using MLflow's ResponsesAgent interface
+- **[docs/mlflow/mlflow3-documentation-guide.md](./docs/mlflow/mlflow3-documentation-guide.md)** - MLflow 3 GenAI apps documentation guide with tracing, evaluation, and monitoring
 
 When planning, researching, or implementing MCP-related code, ALWAYS consult these local documentation files first as they contain:
 - Production-ready code examples
