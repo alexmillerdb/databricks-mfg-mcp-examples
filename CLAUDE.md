@@ -88,6 +88,9 @@ The system demonstrates MCP-based agent orchestration with:
 - **[docs/mlflow/mlflow-agent-development-guide.md](./docs/mlflow/mlflow-agent-development-guide.md)** - Complete guide for developing, logging, and deploying agents using MLflow's ResponsesAgent interface
 - **[docs/mlflow/mlflow3-documentation-guide.md](./docs/mlflow/mlflow3-documentation-guide.md)** - MLflow 3 GenAI apps documentation guide with tracing, evaluation, and monitoring
 
+#### Vector Search & RAG (`docs/vector-search/`)
+- **[docs/vector-search/vector-search-guide.md](./docs/vector-search/vector-search-guide.md)** - Comprehensive guide for Databricks Vector Search integration with LangChain, including OBO authentication, MCP server integration, and RAG implementation patterns
+
 When planning, researching, or implementing MCP-related code, ALWAYS consult these local documentation files first as they contain:
 - Production-ready code examples
 - Error handling patterns

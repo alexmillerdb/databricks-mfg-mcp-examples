@@ -111,16 +111,203 @@ Use libraries:
 #### 2.3 Create Vector Search Indexes
 Location: `src/data/create_vector_indexes.py`
 
-Indexes to create:
+**Following**: docs/vector-search/vector-search-guide.md for comprehensive implementation
+
+Create vector search indexes for RAG capabilities with both managed MCP server integration and direct LangChain tool usage. This implementation supports:
+
+**Indexes to create**:
 - `manufacturing.supply_chain.sop_index` - Standard Operating Procedures
-- `manufacturing.supply_chain.incident_index` - Incident reports
+- `manufacturing.supply_chain.incident_index` - Incident reports  
 - `manufacturing.sales.proposal_index` - Sales proposals
 - `manufacturing.support.ticket_index` - Support ticket history
 
-Configuration:
+**Configuration**:
 - Use embedding model: `databricks-gte-large-en`
-- Similarity metric: cosine
-- Enable delta sync for real-time updates
+- Delta Sync indexes for automatic embedding generation
+- Real-time sync with TRIGGERED pipeline mode
+- Optimized for both LangChain tools and managed MCP servers
+
+**Implementation**:
+```python
+from databricks.vector_search import VectorSearchClient
+from databricks.sdk import WorkspaceClient
+from databricks_langchain import VectorSearchRetrieverTool
+from databricks_mcp import DatabricksMCPClient
+import pandas as pd
+
+def create_manufacturing_vector_indexes():
+    """
+    Create vector search indexes for manufacturing use cases.
+    Supports both managed MCP server integration and direct LangChain usage.
+    """
+    
+    # Initialize clients
+    workspace_client = WorkspaceClient()
+    vs_client = VectorSearchClient(workspace_client=workspace_client)
+    
+    # Vector search endpoint (create if doesn't exist)
+    endpoint_name = "manufacturing_vector_search_endpoint"
+    
+    try:
+        endpoint = vs_client.get_endpoint(endpoint_name)
+        print(f"Using existing endpoint: {endpoint_name}")
+    except Exception:
+        print(f"Creating new endpoint: {endpoint_name}")
+        endpoint = vs_client.create_endpoint(
+            name=endpoint_name,
+            endpoint_type="STANDARD"
+        )
+    
+    # Index configurations for manufacturing use cases
+    indexes_config = [
+        {
+            "name": "manufacturing.supply_chain.sop_index",
+            "source_table": "manufacturing.supply_chain.standard_operating_procedures",
+            "description": "Standard Operating Procedures for supply chain processes",
+            "text_column": "procedure_text",
+            "embedding_model": "databricks-gte-large-en",
+            "sync_mode": "TRIGGERED"
+        },
+        {
+            "name": "manufacturing.supply_chain.incident_index", 
+            "source_table": "manufacturing.supply_chain.incident_reports",
+            "description": "Historical incident reports and resolutions",
+            "text_column": "incident_description",
+            "embedding_model": "databricks-gte-large-en",
+            "sync_mode": "TRIGGERED"
+        },
+        {
+            "name": "manufacturing.sales.proposal_index",
+            "source_table": "manufacturing.sales.sales_proposals", 
+            "description": "Sales proposals and customer communications",
+            "text_column": "proposal_content",
+            "embedding_model": "databricks-gte-large-en",
+            "sync_mode": "TRIGGERED"
+        },
+        {
+            "name": "manufacturing.support.ticket_index",
+            "source_table": "manufacturing.support.support_tickets",
+            "description": "Customer support tickets and resolutions",
+            "text_column": "ticket_content", 
+            "embedding_model": "databricks-gte-large-en",
+            "sync_mode": "TRIGGERED"
+        }
+    ]
+    
+    # Create indexes
+    created_indexes = []
+    for config in indexes_config:
+        try:
+            print(f"Creating index: {config['name']}")
+            
+            # Create Delta Sync index for automatic embedding generation
+            index = vs_client.create_delta_sync_index(
+                endpoint_name=endpoint_name,
+                index_name=config["name"],
+                source_table_name=config["source_table"],
+                pipeline_type="TRIGGERED",  # Real-time sync
+                primary_key="id",
+                embedding_source_column=config["text_column"],
+                embedding_model_endpoint_name=config["embedding_model"]
+            )
+            
+            created_indexes.append({"index": index, "config": config})
+            print(f"✓ Successfully created index: {config['name']}")
+            
+        except Exception as e:
+            print(f"✗ Failed to create index {config['name']}: {e}")
+    
+    return created_indexes, endpoint
+
+def setup_vector_search_tools():
+    """Set up LangChain tools for vector search integration."""
+    
+    # Create LangChain tools for each index
+    vector_tools = []
+    
+    # Standard Operating Procedures retriever
+    sop_tool = VectorSearchRetrieverTool(
+        index_name="manufacturing.supply_chain.sop_index",
+        tool_name="sop_retriever", 
+        tool_description="Retrieves relevant standard operating procedures for manufacturing processes, quality control, and maintenance activities.",
+        num_results=5,
+        columns=["procedure_name", "procedure_text", "category"]
+    )
+    vector_tools.append(sop_tool)
+    
+    # Incident reports retriever
+    incident_tool = VectorSearchRetrieverTool(
+        index_name="manufacturing.supply_chain.incident_index",
+        tool_name="incident_retriever",
+        tool_description="Retrieves historical incident reports and resolutions to help troubleshoot current issues and prevent recurring problems.",
+        num_results=3,
+        columns=["incident_title", "incident_description", "resolution_time_hours"]
+    )
+    vector_tools.append(incident_tool)
+    
+    # Sales proposals retriever  
+    proposal_tool = VectorSearchRetrieverTool(
+        index_name="manufacturing.sales.proposal_index",
+        tool_name="proposal_retriever",
+        tool_description="Retrieves past sales proposals and customer communications to inform new proposals and customer interactions.",
+        num_results=3,
+        columns=["customer_name", "proposal_content", "proposal_value", "status"]
+    )
+    vector_tools.append(proposal_tool)
+    
+    # Support tickets retriever
+    support_tool = VectorSearchRetrieverTool(
+        index_name="manufacturing.support.ticket_index", 
+        tool_name="support_retriever",
+        tool_description="Retrieves customer support ticket history and resolutions to help resolve current customer issues efficiently.",
+        num_results=3,
+        columns=["customer_name", "ticket_content", "resolution"]
+    )
+    vector_tools.append(support_tool)
+    
+    return vector_tools
+
+def setup_managed_mcp_vector_search():
+    """Set up managed MCP server integration for vector search."""
+    
+    # Initialize workspace client
+    workspace_client = WorkspaceClient()
+    host = workspace_client.config.host
+    
+    # MCP server URLs for different catalogs/schemas
+    mcp_servers = {
+        "supply_chain": f"{host}/api/2.0/mcp/vector-search/manufacturing/supply_chain",
+        "sales": f"{host}/api/2.0/mcp/vector-search/manufacturing/sales", 
+        "support": f"{host}/api/2.0/mcp/vector-search/manufacturing/support"
+    }
+    
+    # Connect to managed MCP servers and discover tools
+    mcp_clients = {}
+    discovered_tools = {}
+    
+    for domain, server_url in mcp_servers.items():
+        try:
+            print(f"Connecting to {domain} MCP server: {server_url}")
+            
+            mcp_client = DatabricksMCPClient(
+                server_url=server_url,
+                workspace_client=workspace_client
+            )
+            
+            # Discover available tools
+            tools = mcp_client.list_tools()
+            print(f"Discovered {len(tools)} tools for {domain}:")
+            for tool in tools:
+                print(f"  - {tool.name}: {tool.description}")
+            
+            mcp_clients[domain] = mcp_client
+            discovered_tools[domain] = tools
+            
+        except Exception as e:
+            print(f"Failed to connect to {domain} MCP server: {e}")
+    
+    return mcp_clients, discovered_tools
+```
 
 #### 2.4 Configure Genie Spaces
 Manual steps in Databricks UI:
@@ -572,10 +759,10 @@ if __name__ == "__main__":
 **Priority: Critical | Duration: 3 days**
 **Following**: docs/agents/best-practices-deploying-agents-workflow.md & docs/mlflow/mlflow-agent-development-guide.md
 
-#### 4.1 Implement ResponsesAgent with MCP Integration
+#### 4.1 Implement ResponsesAgent with Vector Search and MCP Integration
 Location: `src/agents/manufacturing_agent.py`
 
-Core ResponsesAgent implementation:
+Core ResponsesAgent implementation with vector search and managed MCP integration:
 ```python
 from uuid import uuid4
 from mlflow.pyfunc import ResponsesAgent
@@ -585,61 +772,148 @@ from mlflow.types.responses import (
 )
 from databricks_mcp import DatabricksMCPClient
 from databricks.sdk import WorkspaceClient
+from databricks_langchain import VectorSearchRetrieverTool, ChatDatabricks
 import asyncio
 
 class ManufacturingAgent(ResponsesAgent):
     """
-    Manufacturing agent using ResponsesAgent interface with managed MCP servers.
+    Manufacturing agent using ResponsesAgent interface with vector search and managed MCP servers.
     Follows best practices from docs/agents/best-practices-deploying-agents-workflow.md
+    and docs/vector-search/vector-search-guide.md
     """
     
     def __init__(self):
         """Initialize agent - keep stateless as per best practices"""
-        # MCP server URLs will be configured at deployment
-        self.mcp_server_urls = []
+        # Configuration will be set at deployment
+        self.llm_endpoint = "databricks-meta-llama-3-3-70b-instruct"
         
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """
-        Process request using managed MCP tools.
-        Initialize resources inside predict for OBO isolation.
+        Process request using vector search and managed MCP tools.
+        Initialize resources inside predict for proper auth isolation.
         """
         # Initialize workspace client inside predict for proper auth
-        w = WorkspaceClient()
-        mcp_client = DatabricksMCPClient(workspace_client=w)
+        workspace_client = WorkspaceClient()
         
-        # Connect to managed MCP servers
-        servers = [
-            f"https://{w.config.host}/api/2.0/mcp/vector-search/manufacturing/supply_chain",
-            f"https://{w.config.host}/api/2.0/mcp/functions/manufacturing/supply_chain",
-            f"https://{w.config.host}/api/2.0/mcp/genie/{self.genie_space_id}"
-        ]
+        # Set up vector search tools
+        vector_tools = self._setup_vector_search_tools()
         
-        # Run async operations
-        response = asyncio.run(self._process_with_mcp(mcp_client, servers, request))
-        return response
-    
-    async def _process_with_mcp(self, mcp_client, servers, request):
-        """Async processing with MCP tools"""
-        # Connect to all servers
-        for server_url in servers:
-            await mcp_client.connect_server_session(server_url)
+        # Set up managed MCP clients
+        mcp_clients = self._setup_mcp_clients(workspace_client)
         
-        # Get last user message
-        last_message = None
-        for msg in request.input:
-            if msg.role == 'user':
-                last_message = msg
+        # Initialize LLM
+        llm = ChatDatabricks(endpoint=self.llm_endpoint)
         
-        # Process with MCP tools based on user intent
-        # This would include tool selection, execution, and response generation
+        # Get user query
+        user_query = request.input[-1].content if request.input else ""
+        
+        # Process query with vector search and MCP tools
+        response_text = self._process_query(
+            user_query, vector_tools, mcp_clients, llm
+        )
         
         # Create response
         output_item = self.create_text_output_item(
-            text=f"Processed: {last_message.content if last_message else 'No message'}",
+            text=response_text,
             id=str(uuid4())
         )
         
         return ResponsesAgentResponse(output=[output_item])
+    
+    def _setup_vector_search_tools(self):
+        """Set up vector search retriever tools"""
+        tools = {}
+        
+        # Standard Operating Procedures retriever
+        tools['sop'] = VectorSearchRetrieverTool(
+            index_name="manufacturing.supply_chain.sop_index",
+            tool_name="sop_retriever",
+            tool_description="Retrieves standard operating procedures",
+            num_results=3
+        )
+        
+        # Incident reports retriever
+        tools['incidents'] = VectorSearchRetrieverTool(
+            index_name="manufacturing.supply_chain.incident_index",
+            tool_name="incident_retriever", 
+            tool_description="Retrieves historical incident reports",
+            num_results=3
+        )
+        
+        # Sales proposals retriever
+        tools['proposals'] = VectorSearchRetrieverTool(
+            index_name="manufacturing.sales.proposal_index",
+            tool_name="proposal_retriever",
+            tool_description="Retrieves sales proposals and customer communications",
+            num_results=3
+        )
+        
+        return tools
+    
+    def _setup_mcp_clients(self, workspace_client):
+        """Set up managed MCP server connections"""
+        host = workspace_client.config.host
+        mcp_clients = {}
+        
+        # Vector search MCP servers
+        mcp_servers = {
+            "supply_chain_vs": f"{host}/api/2.0/mcp/vector-search/manufacturing/supply_chain",
+            "uc_functions": f"{host}/api/2.0/mcp/functions/manufacturing/supply_chain",
+            "genie": f"{host}/api/2.0/mcp/genie/supply_chain_space_id"
+        }
+        
+        for name, server_url in mcp_servers.items():
+            try:
+                mcp_client = DatabricksMCPClient(
+                    server_url=server_url,
+                    workspace_client=workspace_client
+                )
+                mcp_clients[name] = mcp_client
+            except Exception as e:
+                print(f"Failed to connect to {name} MCP server: {e}")
+        
+        return mcp_clients
+    
+    def _process_query(self, user_query, vector_tools, mcp_clients, llm):
+        """Process user query using available tools"""
+        
+        # Determine query intent and select appropriate tools
+        if "procedure" in user_query.lower() or "sop" in user_query.lower():
+            # Use SOP retriever
+            results = vector_tools['sop'].invoke(user_query)
+            context = f"Found {len(results)} relevant procedures: {results}"
+            
+        elif "incident" in user_query.lower() or "problem" in user_query.lower():
+            # Use incident retriever
+            results = vector_tools['incidents'].invoke(user_query)
+            context = f"Found {len(results)} similar incidents: {results}"
+            
+        elif "proposal" in user_query.lower() or "customer" in user_query.lower():
+            # Use proposals retriever
+            results = vector_tools['proposals'].invoke(user_query)
+            context = f"Found {len(results)} relevant proposals: {results}"
+            
+        else:
+            # General search across multiple sources
+            sop_results = vector_tools['sop'].invoke(user_query)
+            incident_results = vector_tools['incidents'].invoke(user_query)
+            context = f"SOPs: {sop_results[:2]}, Incidents: {incident_results[:2]}"
+        
+        # Generate response using LLM with retrieved context
+        prompt = f"""
+        User Query: {user_query}
+        
+        Retrieved Context: {context}
+        
+        Based on the retrieved information, provide a helpful response to the user's query.
+        If the context contains relevant procedures or incident resolutions, reference them specifically.
+        """
+        
+        try:
+            response = llm.invoke(prompt)
+            return response.content if hasattr(response, 'content') else str(response)
+        except Exception as e:
+            return f"I found relevant information: {context[:200]}... but encountered an error generating the response: {e}"
     
     def predict_stream(self, request: ResponsesAgentRequest):
         """Streaming support for better UX"""
@@ -676,11 +950,13 @@ Location: `src/agents/resource_config.py`
 
 ```python
 # Declare all Databricks resources for automatic credential injection
+# Following docs/vector-search/vector-search-guide.md for proper resource declaration
 AGENT_RESOURCES = {
     "vector_indexes": [
         "manufacturing.supply_chain.sop_index",
-        "manufacturing.supply_chain.incident_index",
-        "manufacturing.sales.proposal_index"
+        "manufacturing.supply_chain.incident_index", 
+        "manufacturing.sales.proposal_index",
+        "manufacturing.support.ticket_index"
     ],
     "uc_functions": [
         "manufacturing.supply_chain.predict_shortage",
@@ -692,9 +968,44 @@ AGENT_RESOURCES = {
         "sales_analytics_space_id"
     ],
     "serving_endpoints": [
-        "databricks-dbrx-instruct"  # LLM endpoint
+        "databricks-meta-llama-3-3-70b-instruct"  # LLM endpoint
+    ],
+    "mcp_servers": [
+        # Managed MCP server URLs for vector search
+        "https://{host}/api/2.0/mcp/vector-search/manufacturing/supply_chain",
+        "https://{host}/api/2.0/mcp/vector-search/manufacturing/sales",
+        "https://{host}/api/2.0/mcp/vector-search/manufacturing/support",
+        # UC Functions MCP server
+        "https://{host}/api/2.0/mcp/functions/manufacturing/supply_chain",
+        # Genie MCP server
+        "https://{host}/api/2.0/mcp/genie/{genie_space_id}"
     ]
 }
+
+# MLflow resource objects for proper logging
+from mlflow.models.resources import (
+    DatabricksVectorSearchIndex, 
+    DatabricksServingEndpoint,
+    DatabricksFunction
+)
+
+def get_manufacturing_resources():
+    """Get properly formatted MLflow resource objects"""
+    return [
+        # Vector Search Indexes
+        DatabricksVectorSearchIndex(index_name="manufacturing.supply_chain.sop_index"),
+        DatabricksVectorSearchIndex(index_name="manufacturing.supply_chain.incident_index"),
+        DatabricksVectorSearchIndex(index_name="manufacturing.sales.proposal_index"),
+        DatabricksVectorSearchIndex(index_name="manufacturing.support.ticket_index"),
+        
+        # UC Functions
+        DatabricksFunction(function_name="manufacturing.supply_chain.predict_shortage"),
+        DatabricksFunction(function_name="manufacturing.sales.predict_churn"),
+        DatabricksFunction(function_name="manufacturing.supply_chain.create_order"),
+        
+        # Serving Endpoints
+        DatabricksServingEndpoint(endpoint_name="databricks-meta-llama-3-3-70b-instruct"),
+    ]
 
 ### Phase 5: MLflow Integration & Agent Development Workflow
 **Priority: Critical | Duration: 3 days**
@@ -1118,14 +1429,232 @@ class OBOAgentClient:
         pass
 ```
 
-#### 6.3 Test Tenant Isolation
+#### 6.3 Optional OBO Vector Search Agent Example
+Location: `src/agents/obo_vector_search_agent.py`
+
+**Following**: docs/vector-search/vector-search-guide.md OBO authentication patterns
+
+```python
+from uuid import uuid4
+from mlflow.pyfunc import ResponsesAgent
+from mlflow.types.responses import ResponsesAgentRequest, ResponsesAgentResponse
+from mlflow.models.resources import DatabricksVectorSearchIndex, DatabricksServingEndpoint
+from mlflow.models.auth_policy import UserAuthPolicy, SystemAuthPolicy, AuthPolicy
+from databricks.sdk import WorkspaceClient
+from databricks_ai_bridge import ModelServingUserCredentials
+from databricks_langchain import VectorSearchRetrieverTool, ChatDatabricks
+
+class OBOManufacturingAgent(ResponsesAgent):
+    """
+    Manufacturing agent with On-Behalf-Of authentication for multi-tenant scenarios.
+    Ensures vector search respects individual user permissions and Unity Catalog policies.
+    """
+    
+    def __init__(self):
+        """Initialize OBO agent - stateless design"""
+        self.llm_endpoint = "databricks-meta-llama-3-3-70b-instruct"
+    
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        """
+        Process request with OBO authentication for vector search.
+        Initialize user-authenticated clients inside predict method.
+        """
+        # Initialize OBO client inside predict method for proper user context
+        user_client = WorkspaceClient(
+            credentials_strategy=ModelServingUserCredentials()
+        )
+        
+        # Set up vector search tools with user credentials
+        vector_tools = self._setup_obo_vector_search_tools(user_client)
+        
+        # Initialize LLM with system credentials
+        llm = ChatDatabricks(endpoint=self.llm_endpoint)
+        
+        # Get user query
+        user_query = request.input[-1].content if request.input else ""
+        
+        # Process query with user-scoped vector search
+        try:
+            response_text = self._process_obo_query(user_query, vector_tools, llm)
+        except PermissionError as e:
+            response_text = f"Access denied: {e}. Please check your permissions for the requested data."
+        except Exception as e:
+            response_text = f"Error processing request: {e}"
+        
+        # Create response
+        output_item = self.create_text_output_item(
+            text=response_text,
+            id=str(uuid4())
+        )
+        
+        return ResponsesAgentResponse(output=[output_item])
+    
+    def _setup_obo_vector_search_tools(self, user_client):
+        """Set up vector search tools with user authentication"""
+        tools = {}
+        
+        try:
+            # User-scoped SOPs retriever
+            tools['sop'] = VectorSearchRetrieverTool(
+                index_name="manufacturing.supply_chain.sop_index",
+                tool_name="user_sop_retriever",
+                tool_description="Retrieves user-accessible standard operating procedures",
+                workspace_client=user_client,  # Enforces OBO access
+                num_results=3
+            )
+            
+            # User-scoped incident reports retriever
+            tools['incidents'] = VectorSearchRetrieverTool(
+                index_name="manufacturing.supply_chain.incident_index",
+                tool_name="user_incident_retriever",
+                tool_description="Retrieves user-accessible incident reports",
+                workspace_client=user_client,  # Enforces OBO access
+                num_results=3
+            )
+            
+            # User-scoped proposals retriever (sales team only)
+            tools['proposals'] = VectorSearchRetrieverTool(
+                index_name="manufacturing.sales.proposal_index",
+                tool_name="user_proposal_retriever",
+                tool_description="Retrieves user-accessible sales proposals",
+                workspace_client=user_client,  # Enforces OBO access
+                num_results=3
+            )
+            
+        except Exception as e:
+            print(f"Error setting up OBO vector search tools: {e}")
+            # Return empty tools dict if setup fails
+            tools = {}
+        
+        return tools
+    
+    def _process_obo_query(self, user_query, vector_tools, llm):
+        """Process query with OBO-scoped vector search"""
+        
+        if not vector_tools:
+            return "Unable to access vector search tools. Please check your permissions."
+        
+        # Determine query intent and use appropriate tools
+        context_parts = []
+        
+        if "procedure" in user_query.lower() or "sop" in user_query.lower():
+            if 'sop' in vector_tools:
+                results = vector_tools['sop'].invoke(user_query)
+                context_parts.append(f"Procedures: {results}")
+        
+        elif "incident" in user_query.lower() or "problem" in user_query.lower():
+            if 'incidents' in vector_tools:
+                results = vector_tools['incidents'].invoke(user_query)
+                context_parts.append(f"Incidents: {results}")
+        
+        elif "proposal" in user_query.lower() or "customer" in user_query.lower():
+            if 'proposals' in vector_tools:
+                results = vector_tools['proposals'].invoke(user_query)
+                context_parts.append(f"Proposals: {results}")
+        
+        else:
+            # General search with user permissions
+            for tool_name, tool in vector_tools.items():
+                try:
+                    results = tool.invoke(user_query)
+                    if results:
+                        context_parts.append(f"{tool_name}: {results[:2]}")
+                except Exception as e:
+                    print(f"Error accessing {tool_name}: {e}")
+        
+        if not context_parts:
+            return "No accessible information found for your query. This may be due to permission restrictions."
+        
+        context = " | ".join(context_parts)
+        
+        # Generate response with retrieved context
+        prompt = f"""
+        User Query: {user_query}
+        
+        Retrieved Context (user-scoped): {context}
+        
+        Based on the information you have access to, provide a helpful response.
+        Note that results are filtered based on your permissions.
+        """
+        
+        response = llm.invoke(prompt)
+        return response.content if hasattr(response, 'content') else str(response)
+
+# Resource and authentication policy configuration for OBO agent
+def get_obo_agent_resources():
+    """
+    Define resources and authentication policies for OBO vector search agent.
+    Following docs/vector-search/vector-search-guide.md OBO patterns.
+    """
+    
+    # Declare all vector search indexes as resources
+    resources = [
+        DatabricksVectorSearchIndex(index_name="manufacturing.supply_chain.sop_index"),
+        DatabricksVectorSearchIndex(index_name="manufacturing.supply_chain.incident_index"),
+        DatabricksVectorSearchIndex(index_name="manufacturing.sales.proposal_index"),
+        DatabricksVectorSearchIndex(index_name="manufacturing.support.ticket_index"),
+        DatabricksServingEndpoint(endpoint_name="databricks-meta-llama-3-3-70b-instruct"),
+    ]
+    
+    # System resources (agent identity)
+    system_auth_policy = SystemAuthPolicy(resources=resources)
+    
+    # User authentication policy for OBO access
+    user_auth_policy = UserAuthPolicy(
+        api_scopes=[
+            "serving.serving-endpoints",              # For LLM endpoints
+            "vectorsearch.vector-search-endpoints",   # For vector search endpoints  
+            "vectorsearch.vector-search-indexes",     # For vector search indexes
+            "sql.query",                              # For SQL-based data access
+            # Add other scopes as needed
+        ]
+    )
+    
+    # Combined authentication policy
+    auth_policy = AuthPolicy(
+        system_auth_policy=system_auth_policy,
+        user_auth_policy=user_auth_policy
+    )
+    
+    return resources, auth_policy
+
+# MLflow logging for OBO agent
+def log_obo_agent():
+    """Log OBO agent with proper resource and authentication policies"""
+    import mlflow
+    
+    resources, auth_policy = get_obo_agent_resources()
+    
+    with mlflow.start_run():
+        logged_agent_info = mlflow.pyfunc.log_model(
+            name="obo_manufacturing_agent",
+            python_model="obo_vector_search_agent.py",
+            auth_policy=auth_policy,  # Includes both system and user policies
+            pip_requirements=[
+                "databricks-langchain",
+                "databricks-ai-bridge", 
+                "databricks-mcp",
+                "mlflow>=3.1.0"
+            ],
+            input_example={
+                "input": [
+                    {"role": "user", "content": "What procedures should I follow for quality control?"}
+                ]
+            }
+        )
+    
+    return logged_agent_info
+```
+
+#### 6.4 Test Tenant Isolation
 Location: `tests/test_tenant_isolation.py`
 
 Test scenarios:
 - User A cannot access User B's data
-- Proper filtering of Genie Space results
+- Proper filtering of Genie Space results  
 - Vector Search respects permissions
 - UC Functions honor row-level security
+- OBO vector search enforces user permissions
 
 ### Phase 7: Optional Custom MCP Server (Only if Needed)
 **Priority: Low | Duration: 2 days**
