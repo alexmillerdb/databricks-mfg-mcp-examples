@@ -17,115 +17,11 @@ import os
 import sys
 from typing import Dict, Tuple
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-def setup_databricks_environment():
-    """Universal setup for local IDE or notebook execution"""
-    
-    # Detect execution environment
-    is_notebook = 'DATABRICKS_RUNTIME_VERSION' in os.environ
-    
-    if is_notebook:
-        print("🟢 Databricks Notebook Environment")
-        return setup_notebook_env()
-    else:
-        print("🔵 Local IDE Environment")
-        return setup_local_env()
-
-
-def setup_notebook_env():
-    """Setup for Databricks notebook"""
-    from databricks.sdk import WorkspaceClient
-    
-    # In notebook, spark is available globally
-    global spark  # Declare global to avoid undefined variable warning
-    return {
-        'environment': 'notebook',
-        'spark': spark,  # Available globally in notebooks
-        'workspace_client': WorkspaceClient(),
-        'catalog': os.getenv('UC_DEFAULT_CATALOG', 'mfg_mcp_demo'),
-        'schema': 'supply_chain'  # Default schema
-    }
-
-
-def setup_local_env():
-    """Setup for local IDE"""
-    from dotenv import load_dotenv
-    from databricks.connect import DatabricksSession
-    from databricks.sdk import WorkspaceClient
-    import mlflow
-    
-    # Load environment variables
-    load_dotenv()
-    
-    profile = os.getenv("DATABRICKS_CONFIG_PROFILE", "aws-apps")
-    catalog = os.getenv("UC_DEFAULT_CATALOG", "mfg_mcp_demo")
-    schema = os.getenv("UC_DEFAULT_SCHEMA", "supply_chain")
-    
-    try:
-        # Initialize Databricks Connect
-        spark = DatabricksSession.builder.profile(profile).serverless(True).getOrCreate()
-        
-        # Set catalog context only (no schema since we use fully qualified table names)
-        spark.sql(f"USE CATALOG {catalog}")
-        
-        # Configure MLflow (optional for this script but good to have)
-        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
-        mlflow.set_registry_uri(os.getenv("MLFLOW_REGISTRY_URI", "databricks-uc"))
-        
-        return {
-            'environment': 'local',
-            'spark': spark,
-            'workspace_client': WorkspaceClient(profile=profile),
-            'catalog': catalog,
-            'schema': schema
-        }
-    except Exception as e:
-        print(f"⚠️  Error setting up local environment: {e}")
-        print("   Running in dry-run mode (SQL statements will be printed but not executed)")
-        return {
-            'environment': 'local',
-            'spark': None,  # Dry-run mode
-            'workspace_client': None,
-            'catalog': catalog,
-            'schema': schema
-        }
-
-
-def cleanup_environment(config):
-    """Clean up resources (local only)"""
-    if config.get('environment') == 'local' and config.get('spark'):
-        try:
-            config['spark'].stop()
-        except:
-            pass  # Ignore errors during cleanup
-
-
-def execute_sql(spark, sql: str, description: str = None) -> bool:
-    """
-    Execute SQL statement with error handling and logging.
-    """
-    try:
-        if description:
-            print(f"📋 {description}")
-        
-        if spark:
-            result = spark.sql(sql)
-            if result is not None and hasattr(result, 'collect'):
-                result.collect()
-        else:
-            print(f"   SQL: {sql[:200]}...")  # Show first 200 chars in dry-run
-        
-        print("   ✅ Success")
-        return True
-        
-    except Exception as e:
-        error_msg = str(e)
-        if "already exists" in error_msg.lower():
-            print("   ℹ️  Table already exists (skipping)")
-            return True
-        else:
-            print(f"   ❌ Error: {error_msg}")
-            return False
+# Import utilities from utils package
+from utils import setup_databricks_environment, cleanup_environment, execute_sql
 
 
 def create_supply_chain_tables(spark, catalog: str = "mfg_mcp_demo") -> Dict[str, bool]:

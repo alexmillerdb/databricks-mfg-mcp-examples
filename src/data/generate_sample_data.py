@@ -20,6 +20,12 @@ import uuid
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+# Import utilities from utils package
+from utils import setup_databricks_environment, cleanup_environment
+
 # Try to import faker, install if not available
 try:
     from faker import Faker
@@ -32,88 +38,6 @@ except ImportError:
 fake = Faker()
 Faker.seed(42)  # For reproducibility
 random.seed(42)
-
-
-def setup_databricks_environment():
-    """Universal setup for local IDE or notebook execution"""
-    
-    # Detect execution environment
-    is_notebook = 'DATABRICKS_RUNTIME_VERSION' in os.environ
-    
-    if is_notebook:
-        print("🟢 Databricks Notebook Environment")
-        return setup_notebook_env()
-    else:
-        print("🔵 Local IDE Environment")
-        return setup_local_env()
-
-
-def setup_notebook_env():
-    """Setup for Databricks notebook"""
-    from databricks.sdk import WorkspaceClient
-    
-    # In notebook, spark is available globally
-    global spark  # Declare global to avoid undefined variable warning
-    return {
-        'environment': 'notebook',
-        'spark': spark,  # Available globally in notebooks
-        'workspace_client': WorkspaceClient(),
-        'catalog': os.getenv('UC_DEFAULT_CATALOG', 'mfg_mcp_demo'),
-        'schema': 'supply_chain'  # Default schema
-    }
-
-
-def setup_local_env():
-    """Setup for local IDE"""
-    from dotenv import load_dotenv
-    from databricks.connect import DatabricksSession
-    from databricks.sdk import WorkspaceClient
-    import mlflow
-    
-    # Load environment variables
-    load_dotenv()
-    
-    profile = os.getenv("DATABRICKS_CONFIG_PROFILE", "aws-apps")
-    catalog = os.getenv("UC_DEFAULT_CATALOG", "mfg_mcp_demo")
-    schema = os.getenv("UC_DEFAULT_SCHEMA", "supply_chain")
-    
-    try:
-        # Initialize Databricks Connect
-        spark = DatabricksSession.builder.profile(profile).serverless(True).getOrCreate()
-        
-        # Set catalog context only (no schema since we use fully qualified table names)
-        spark.sql(f"USE CATALOG {catalog}")
-        
-        # Configure MLflow (optional for this script but good to have)
-        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "databricks"))
-        mlflow.set_registry_uri(os.getenv("MLFLOW_REGISTRY_URI", "databricks-uc"))
-        
-        return {
-            'environment': 'local',
-            'spark': spark,
-            'workspace_client': WorkspaceClient(profile=profile),
-            'catalog': catalog,
-            'schema': schema
-        }
-    except Exception as e:
-        print(f"⚠️  Error setting up local environment: {e}")
-        print("   Running in dry-run mode (data will be generated but not loaded)")
-        return {
-            'environment': 'local',
-            'spark': None,  # Dry-run mode
-            'workspace_client': None,
-            'catalog': catalog,
-            'schema': schema
-        }
-
-
-def cleanup_environment(config):
-    """Clean up resources (local only)"""
-    if config.get('environment') == 'local' and config.get('spark'):
-        try:
-            config['spark'].stop()
-        except:
-            pass  # Ignore errors during cleanup
 
 
 def generate_suppliers(num_suppliers: int = 50) -> List[Dict[str, Any]]:
